@@ -62,10 +62,10 @@ impl Block {
     }
 
     pub fn splice<R: RangeBounds<usize> + Clone>(&mut self, range: R, other: Self) {
-        self.span_info
-            .splice(range.clone(), other.span_info.into_iter());
-        self.body.splice(range, other.body.into_iter());
+        self.span_info.splice(range.clone(), other.span_info);
+        self.body.splice(range, other.body);
     }
+
     pub fn span_iter(&self) -> impl Iterator<Item = (&Statement, &Span)> {
         let span_iter = self.span_info.iter();
 
