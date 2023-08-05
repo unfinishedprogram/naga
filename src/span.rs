@@ -404,14 +404,11 @@ pub trait NestedSpan {
 }
 
 impl NestedSpan for WithSpan<ValidationError> {
-    fn nested_spans(&self) -> Vec<(Span, String)> {
-        let mut res: Vec<_> = self
-            .spans()
-            .map(|(span, msg)| (*span, msg.to_owned()))
-            .collect();
+    fn nested_spans(&self) -> Vec<SpanContext> {
+        let mut res: Vec<_> = self.spans().map(Clone::clone).collect();
 
         match self.as_inner() {
-            ValidationError::Function { source, .. } => res.extend(source.nested_spans()),
+            &ValidationError::Function { ref source, .. } => res.extend(source.nested_spans()),
             _ => {}
         }
 
@@ -421,8 +418,6 @@ impl NestedSpan for WithSpan<ValidationError> {
 
 impl NestedSpan for WithSpan<FunctionError> {
     fn nested_spans(&self) -> Vec<(Span, String)> {
-        self.spans()
-            .map(|(span, msg)| (*span, msg.into()))
-            .collect()
+        self.spans().map(Clone::clone).collect()
     }
 }
