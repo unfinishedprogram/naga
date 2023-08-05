@@ -1,9 +1,8 @@
-#[cfg(feature = "validate")]
 use super::{
     compose::validate_compose, validate_atomic_compare_exchange_struct, FunctionInfo, ModuleInfo,
     ShaderStages, TypeFlags,
 };
-#[cfg(feature = "validate")]
+
 use crate::arena::UniqueArena;
 
 use crate::{
@@ -126,14 +125,12 @@ pub enum ExpressionError {
     MissingCapabilities(super::Capabilities),
 }
 
-#[cfg(feature = "validate")]
 struct ExpressionTypeResolver<'a> {
     root: Handle<crate::Expression>,
     types: &'a UniqueArena<crate::Type>,
     info: &'a FunctionInfo,
 }
 
-#[cfg(feature = "validate")]
 impl<'a> std::ops::Index<Handle<crate::Expression>> for ExpressionTypeResolver<'a> {
     type Output = crate::TypeInner;
 
@@ -151,7 +148,6 @@ impl<'a> std::ops::Index<Handle<crate::Expression>> for ExpressionTypeResolver<'
     }
 }
 
-#[cfg(feature = "validate")]
 impl super::Validator {
     pub(super) fn validate_const_expression(
         &self,

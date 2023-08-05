@@ -100,12 +100,9 @@ fn run(args: Args) -> anyhow::Result<()> {
                             buf
                         };
                         let expected_header_prefix = "; Version: ";
-                        let Some(version) =
-                            second_line.strip_prefix(expected_header_prefix) else {
-                                bail!(
-                                    "no {expected_header_prefix:?} header found in {path:?}"
-                                );
-                            };
+                        let Some(version) = second_line.strip_prefix(expected_header_prefix) else {
+                            bail!("no {expected_header_prefix:?} header found in {path:?}");
+                        };
                         let file = open_file(path)?;
                         let mut spirv_as_cmd = EasyCommand::new(spirv_as, |cmd| {
                             cmd.stdin(Stdio::from(file))
@@ -134,12 +131,9 @@ fn run(args: Args) -> anyhow::Result<()> {
                             buf
                         };
                         let expected_header_prefix = "// language: ";
-                        let Some(language) =
-                            first_line.strip_prefix(expected_header_prefix) else {
-                                bail!(
-                                    "no {expected_header_prefix:?} header found in {path:?}"
-                                );
-                            };
+                        let Some(language) = first_line.strip_prefix(expected_header_prefix) else {
+                            bail!("no {expected_header_prefix:?} header found in {path:?}");
+                        };
                         let language = language.strip_suffix('\n').unwrap_or(language);
 
                         let file = open_file(path)?;
@@ -267,15 +261,16 @@ fn run(args: Args) -> anyhow::Result<()> {
                                     .target_profile
                                     .split('_')
                                     .nth(1)
-                                    .map(|segment| segment.parse::<u8>()) else {
-                                        bail!(
-                                            "expected target profile of the form \
+                                    .map(|segment| segment.parse::<u8>())
+                                else {
+                                    bail!(
+                                        "expected target profile of the form \
                                             `{{model}}_{{major}}_{{minor}}`, found invalid target \
                                             profile {:?} in file {}",
-                                            config_item.target_profile,
-                                            file.display()
-                                        )
-                                    };
+                                        config_item.target_profile,
+                                        file.display()
+                                    )
+                                };
                                 // NOTE: This isn't implemented by `fxc.exe`; see
                                 // <https://learn.microsoft.com/en-us/windows/win32/direct3dtools/dx-graphics-tools-fxc-syntax#profiles>.
                                 if shader_model_major_version < 6 {
