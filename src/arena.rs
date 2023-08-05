@@ -206,7 +206,7 @@ impl<T> Range<T> {
 /// Adding new items to the arena produces a strongly-typed [`Handle`].
 /// The arena can be indexed using the given handle to obtain
 /// a reference to the stored item.
-#[cfg_attr(feature = "clone", derive(Clone))]
+#[derive(Clone)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serialize", serde(transparent))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -482,7 +482,7 @@ mod tests {
 ///
 /// `UniqueArena` is similar to [`Arena`]: If `Arena` is vector-like,
 /// `UniqueArena` is `HashSet`-like.
-#[cfg_attr(feature = "clone", derive(Clone))]
+#[derive(Clone)]
 pub struct UniqueArena<T> {
     set: IndexSet<T>,
 
