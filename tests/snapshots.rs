@@ -131,14 +131,10 @@ fn check_targets(module: &naga::Module, name: &str, targets: Targets, source_cod
 
     #[cfg(all(feature = "deserialize", feature = "spv-out"))]
     {
-        let debug_info = if cfg!(feature = "span") {
-            source_code.map(|code| naga::back::spv::DebugInfo {
-                source_code: code,
-                file_name: name,
-            })
-        } else {
-            None
-        };
+        let debug_info = source_code.map(|code| naga::back::spv::DebugInfo {
+            source_code: code,
+            file_name: name,
+        });
 
         if targets.contains(Targets::SPIRV) {
             write_output_spv(
@@ -624,21 +620,18 @@ fn convert_wgsl() {
         }
     }
 
-    #[cfg(feature = "span")]
-    {
-        let inputs = [
-            ("debug-symbol-simple", Targets::SPIRV),
-            ("debug-symbol-terrain", Targets::SPIRV),
-        ];
-        for &(name, targets) in inputs.iter() {
-            println!("Processing '{name}'");
-            // WGSL shaders lives in root dir as a privileged.
-            let file = fs::read_to_string(format!("{root}/{BASE_DIR_IN}/{name}.wgsl"))
-                .expect("Couldn't find wgsl file");
-            match naga::front::wgsl::parse_str(&file) {
-                Ok(module) => check_targets(&module, name, targets, Some(&file)),
-                Err(e) => panic!("{}", e.emit_to_string(&file)),
-            }
+    let inputs = [
+        ("debug-symbol-simple", Targets::SPIRV),
+        ("debug-symbol-terrain", Targets::SPIRV),
+    ];
+    for &(name, targets) in inputs.iter() {
+        println!("Processing '{name}'");
+        // WGSL shaders lives in root dir as a privileged.
+        let file = fs::read_to_string(format!("{root}/{BASE_DIR_IN}/{name}.wgsl"))
+            .expect("Couldn't find wgsl file");
+        match naga::front::wgsl::parse_str(&file) {
+            Ok(module) => check_targets(&module, name, targets, Some(&file)),
+            Err(e) => panic!("{}", e.emit_to_string(&file)),
         }
     }
 }
