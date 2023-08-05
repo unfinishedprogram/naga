@@ -228,7 +228,7 @@ pub enum ValidationError {
     Function {
         handle: Handle<crate::Function>,
         name: String,
-        source: FunctionError,
+        source: WithSpan<FunctionError>,
     },
     #[error("Entry point {name} at {stage:?} is invalid")]
     EntryPoint {
@@ -429,14 +429,12 @@ impl Validator {
             match self.validate_function(fun, module, &mod_info, false) {
                 Ok(info) => mod_info.functions.push(info),
                 Err(error) => {
-                    return Err(error.and_then(|source| {
-                        ValidationError::Function {
-                            handle,
-                            name: fun.name.clone().unwrap_or_default(),
-                            source,
-                        }
-                        .with_span_handle(handle, &module.functions)
-                    }))
+                    return Err(ValidationError::Function {
+                        handle,
+                        name: fun.name.clone().unwrap_or_default(),
+                        source: error,
+                    }
+                    .with_span_handle(handle, &module.functions));
                 }
             }
         }

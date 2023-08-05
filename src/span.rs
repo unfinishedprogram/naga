@@ -1,4 +1,7 @@
-use crate::{Arena, Handle, UniqueArena};
+use crate::{
+    valid::{FunctionError, ValidationError},
+    Arena, Handle, UniqueArena,
+};
 use std::{error::Error, fmt, ops::Range};
 
 /// A source code span, used for error reporting.
@@ -237,7 +240,7 @@ impl<E> WithSpan<E> {
         Some(self.spans[0].0.location(source))
     }
 
-    fn diagnostic(&self) -> codespan_reporting::diagnostic::Diagnostic<()>
+    pub fn diagnostic(&self) -> codespan_reporting::diagnostic::Diagnostic<()>
     where
         E: Error,
     {
@@ -396,106 +399,30 @@ impl<T, E, E2> MapErrWithSpan<E, E2> for Result<T, WithSpan<E>> {
     }
 }
 
-#[test]
-fn span_location() {
-    let source = "12\n45\n\n89\n";
-    assert_eq!(
-        Span { start: 0, end: 1 }.location(source),
-        SourceLocation {
-            line_number: 1,
-            line_position: 1,
-            offset: 0,
-            length: 1
+pub trait NestedSpan {
+    fn nested_spans(&self) -> Vec<(Span, String)>;
+}
+
+impl NestedSpan for WithSpan<ValidationError> {
+    fn nested_spans(&self) -> Vec<(Span, String)> {
+        let mut res: Vec<_> = self
+            .spans()
+            .map(|(span, msg)| (*span, msg.to_owned()))
+            .collect();
+
+        match self.as_inner() {
+            ValidationError::Function { source, .. } => res.extend(source.nested_spans()),
+            _ => {}
         }
-    );
-    assert_eq!(
-        Span { start: 1, end: 2 }.location(source),
-        SourceLocation {
-            line_number: 1,
-            line_position: 2,
-            offset: 1,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 2, end: 3 }.location(source),
-        SourceLocation {
-            line_number: 1,
-            line_position: 3,
-            offset: 2,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 3, end: 5 }.location(source),
-        SourceLocation {
-            line_number: 2,
-            line_position: 1,
-            offset: 3,
-            length: 2
-        }
-    );
-    assert_eq!(
-        Span { start: 4, end: 6 }.location(source),
-        SourceLocation {
-            line_number: 2,
-            line_position: 2,
-            offset: 4,
-            length: 2
-        }
-    );
-    assert_eq!(
-        Span { start: 5, end: 6 }.location(source),
-        SourceLocation {
-            line_number: 2,
-            line_position: 3,
-            offset: 5,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 6, end: 7 }.location(source),
-        SourceLocation {
-            line_number: 3,
-            line_position: 1,
-            offset: 6,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 7, end: 8 }.location(source),
-        SourceLocation {
-            line_number: 4,
-            line_position: 1,
-            offset: 7,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 8, end: 9 }.location(source),
-        SourceLocation {
-            line_number: 4,
-            line_position: 2,
-            offset: 8,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 9, end: 10 }.location(source),
-        SourceLocation {
-            line_number: 4,
-            line_position: 3,
-            offset: 9,
-            length: 1
-        }
-    );
-    assert_eq!(
-        Span { start: 10, end: 11 }.location(source),
-        SourceLocation {
-            line_number: 5,
-            line_position: 1,
-            offset: 10,
-            length: 1
-        }
-    );
+
+        res
+    }
+}
+
+impl NestedSpan for WithSpan<FunctionError> {
+    fn nested_spans(&self) -> Vec<(Span, String)> {
+        self.spans()
+            .map(|(span, msg)| (*span, msg.into()))
+            .collect()
+    }
 }

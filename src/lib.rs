@@ -282,7 +282,7 @@ mod block;
 pub mod front;
 pub mod keywords;
 pub mod proc;
-mod span;
+pub mod span;
 pub mod valid;
 
 pub use crate::arena::{Arena, Handle, Range, UniqueArena};

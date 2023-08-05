@@ -27,7 +27,7 @@ impl ParseError {
         &self.message
     }
 
-    fn diagnostic(&self) -> Diagnostic<()> {
+    pub fn diagnostic(&self) -> Diagnostic<()> {
         let diagnostic = Diagnostic::error()
             .with_message(self.message.to_string())
             .with_labels(

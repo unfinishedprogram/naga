@@ -1107,7 +1107,7 @@ fn invalid_functions() {
         ":
         Err(naga::valid::ValidationError::Function {
             name: function_name,
-            source: naga::valid::FunctionError::NonConstructibleReturnType,
+            source: naga::valid::FunctionError::NonConstructibleReturnType.with_span(),
             ..
         })
         if function_name == "return_pointer"
