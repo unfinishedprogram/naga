@@ -4,6 +4,7 @@ Shader validator.
 
 mod analyzer;
 mod compose;
+mod display;
 mod expression;
 mod function;
 mod handles;
@@ -13,10 +14,11 @@ mod r#type;
 use crate::{
     arena::Handle,
     proc::{LayoutError, Layouter, TypeResolution},
-    FastHashSet,
+    FastHashSet, Module, Span,
 };
 use bit_set::BitSet;
-use std::ops;
+use codespan_reporting::diagnostic::Diagnostic;
+use std::ops::{self};
 
 //TODO: analyze the model at the same time as we validate it,
 // merge the corresponding matches over expressions and statements.
@@ -175,6 +177,8 @@ pub struct Validator {
     switch_values: FastHashSet<crate::SwitchValue>,
     valid_expression_list: Vec<Handle<crate::Expression>>,
     valid_expression_set: BitSet,
+    code_source: String,
+    module: Option<Module>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -299,7 +303,13 @@ impl Validator {
             switch_values: FastHashSet::default(),
             valid_expression_list: Vec::new(),
             valid_expression_set: BitSet::new(),
+            code_source: String::new(),
+            module: None,
         }
+    }
+
+    pub fn source_string(&self, span: Span) -> &str {
+        &self.code_source[span.to_range().unwrap_or_default()]
     }
 
     /// Reset the validator internals
@@ -311,6 +321,7 @@ impl Validator {
         self.switch_values.clear();
         self.valid_expression_list.clear();
         self.valid_expression_set.clear();
+        self.code_source.clear();
     }
 
     fn validate_constant(
@@ -338,9 +349,12 @@ impl Validator {
     /// Check the given module to be valid.
     pub fn validate(
         &mut self,
-        module: &crate::Module,
-    ) -> Result<ModuleInfo, WithSpan<ValidationError>> {
+        module: &Module,
+        code_source: String,
+    ) -> Result<ModuleInfo, Diagnostic<()>> {
         self.reset();
+        self.code_source = code_source;
+        self.module = Some(module.clone());
         self.reset_types(module.types.len());
 
         Self::validate_module_handles(module).map_err(|e| e.with_span())?;
@@ -428,14 +442,7 @@ impl Validator {
         for (handle, fun) in module.functions.iter() {
             match self.validate_function(fun, module, &mod_info, false) {
                 Ok(info) => mod_info.functions.push(info),
-                Err(error) => {
-                    return Err(ValidationError::Function {
-                        handle,
-                        name: fun.name.clone().unwrap_or_default(),
-                        source: error,
-                    }
-                    .with_span_handle(handle, &module.functions));
-                }
+                Err(error) => return Err(error),
             }
         }
 
@@ -447,21 +454,13 @@ impl Validator {
                     name: ep.name.clone(),
                     source: EntryPointError::Conflict,
                 }
-                .with_span()); // TODO: keep some EP span information?
+                .with_span()
+                .into()); // TODO: keep some EP span information?
             }
 
             match self.validate_entry_point(ep, module, &mod_info) {
                 Ok(info) => mod_info.entry_points.push(info),
-                Err(error) => {
-                    return Err(error.and_then(|source| {
-                        ValidationError::EntryPoint {
-                            stage: ep.stage,
-                            name: ep.name.clone(),
-                            source,
-                        }
-                        .with_span()
-                    }));
-                }
+                Err(error) => return Err(error),
             }
         }
 
@@ -483,4 +482,10 @@ fn validate_atomic_compare_exchange_struct(
                 kind: crate::ScalarKind::Bool,
                 width: crate::BOOL_WIDTH,
             }
+}
+
+impl From<WithSpan<ValidationError>> for Diagnostic<()> {
+    fn from(value: WithSpan<ValidationError>) -> Self {
+        value.diagnostic()
+    }
 }

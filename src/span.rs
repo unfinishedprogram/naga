@@ -398,26 +398,3 @@ impl<T, E, E2> MapErrWithSpan<E, E2> for Result<T, WithSpan<E>> {
         self.map_err(|e| e.and_then(func).into_other::<E2>())
     }
 }
-
-pub trait NestedSpan {
-    fn nested_spans(&self) -> Vec<(Span, String)>;
-}
-
-impl NestedSpan for WithSpan<ValidationError> {
-    fn nested_spans(&self) -> Vec<SpanContext> {
-        let mut res: Vec<_> = self.spans().map(Clone::clone).collect();
-
-        match self.as_inner() {
-            &ValidationError::Function { ref source, .. } => res.extend(source.nested_spans()),
-            _ => {}
-        }
-
-        res
-    }
-}
-
-impl NestedSpan for WithSpan<FunctionError> {
-    fn nested_spans(&self) -> Vec<(Span, String)> {
-        self.spans().map(Clone::clone).collect()
-    }
-}

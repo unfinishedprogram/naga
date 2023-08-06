@@ -4,8 +4,9 @@ use super::{
 };
 use crate::arena::{Handle, UniqueArena};
 
-use crate::span::{AddSpan as _, MapErrWithSpan as _, SpanProvider as _, WithSpan};
+use crate::span::{AddSpan as _, SpanProvider as _, WithSpan};
 use bit_set::BitSet;
+use codespan_reporting::diagnostic::Diagnostic;
 
 const MAX_WORKGROUP_SIZE: u32 = 0x4000;
 
@@ -366,8 +367,6 @@ impl VaryingContext<'_> {
                                         )
                                         .with_span_context(span_context));
                                     }
-                                    #[cfg(not(feature = "validate"))]
-                                    let _ = index;
                                 }
                                 Some(ref binding) => self
                                     .validate_impl(member.ty, binding)
@@ -530,18 +529,21 @@ impl super::Validator {
         ep: &crate::EntryPoint,
         module: &crate::Module,
         mod_info: &ModuleInfo,
-    ) -> Result<FunctionInfo, WithSpan<EntryPointError>> {
+    ) -> Result<FunctionInfo, Diagnostic<()>> {
         if ep.early_depth_test.is_some() {
             let required = Capabilities::EARLY_DEPTH_TEST;
             if !self.capabilities.contains(required) {
                 return Err(
                     EntryPointError::Result(VaryingError::UnsupportedCapability(required))
-                        .with_span(),
+                        .with_span()
+                        .diagnostic(),
                 );
             }
 
             if ep.stage != crate::ShaderStage::Fragment {
-                return Err(EntryPointError::UnexpectedEarlyDepthTest.with_span());
+                return Err(EntryPointError::UnexpectedEarlyDepthTest
+                    .with_span()
+                    .diagnostic());
             }
         }
 
@@ -551,15 +553,17 @@ impl super::Validator {
                 .iter()
                 .any(|&s| s == 0 || s > MAX_WORKGROUP_SIZE)
             {
-                return Err(EntryPointError::OutOfRangeWorkgroupSize.with_span());
+                return Err(EntryPointError::OutOfRangeWorkgroupSize
+                    .with_span()
+                    .diagnostic());
             }
         } else if ep.workgroup_size != [0; 3] {
-            return Err(EntryPointError::UnexpectedWorkgroupSize.with_span());
+            return Err(EntryPointError::UnexpectedWorkgroupSize
+                .with_span()
+                .diagnostic());
         }
 
-        let info = self
-            .validate_function(&ep.function, module, mod_info, true)
-            .map_err(WithSpan::into_other)?;
+        let info = self.validate_function(&ep.function, module, mod_info, true)?;
 
         {
             use super::ShaderStages;
@@ -571,14 +575,16 @@ impl super::Validator {
             };
 
             if !info.available_stages.contains(stage_bit) {
-                return Err(EntryPointError::ForbiddenStageOperations.with_span());
+                return Err(EntryPointError::ForbiddenStageOperations
+                    .with_span()
+                    .diagnostic());
             }
         }
 
         self.location_mask.clear();
         let mut argument_built_ins = crate::FastHashSet::default();
         // TODO: add span info to function arguments
-        for (index, fa) in ep.function.arguments.iter().enumerate() {
+        for (index, argument) in ep.function.arguments.iter().enumerate() {
             let mut ctx = VaryingContext {
                 stage: ep.stage,
                 output: false,
@@ -590,8 +596,8 @@ impl super::Validator {
 
                 flags: self.flags,
             };
-            ctx.validate(fa.ty, fa.binding.as_ref())
-                .map_err_inner(|e| EntryPointError::Argument(index as u32, e).with_span())?;
+            ctx.validate(argument.ty, argument.binding.as_ref())
+                .map_err(|v| v.diagnostic())?
         }
 
         self.location_mask.clear();
@@ -608,16 +614,20 @@ impl super::Validator {
 
                 flags: self.flags,
             };
-            ctx.validate(fr.ty, fr.binding.as_ref())
-                .map_err_inner(|e| EntryPointError::Result(e).with_span())?;
+            // ctx.validate(fr.ty, fr.binding.as_ref())
+            //     .map_err_inner(|e| EntryPointError::Result(e).with_span())?;
 
             if ep.stage == crate::ShaderStage::Vertex
                 && !result_built_ins.contains(&crate::BuiltIn::Position { invariant: false })
             {
-                return Err(EntryPointError::MissingVertexOutputPosition.with_span());
+                return Err(EntryPointError::MissingVertexOutputPosition
+                    .with_span()
+                    .diagnostic());
             }
         } else if ep.stage == crate::ShaderStage::Vertex {
-            return Err(EntryPointError::MissingVertexOutputPosition.with_span());
+            return Err(EntryPointError::MissingVertexOutputPosition
+                .with_span()
+                .diagnostic());
         }
 
         for bg in self.bind_group_masks.iter_mut() {
@@ -659,7 +669,8 @@ impl super::Validator {
                     usage
                 );
                 return Err(EntryPointError::InvalidGlobalUsage(var_handle, usage)
-                    .with_span_handle(var_handle, &module.global_variables));
+                    .with_span_handle(var_handle, &module.global_variables)
+                    .diagnostic());
             }
 
             if let Some(ref bind) = var.binding {
@@ -669,7 +680,8 @@ impl super::Validator {
                 if !self.bind_group_masks[bind.group as usize].insert(bind.binding as usize) {
                     if self.flags.contains(super::ValidationFlags::BINDINGS) {
                         return Err(EntryPointError::BindingCollision(var_handle)
-                            .with_span_handle(var_handle, &module.global_variables));
+                            .with_span_handle(var_handle, &module.global_variables)
+                            .diagnostic());
                     }
                 }
             }

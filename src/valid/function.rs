@@ -1,5 +1,4 @@
 use crate::arena::Handle;
-
 use crate::arena::{Arena, UniqueArena};
 
 use super::validate_atomic_compare_exchange_struct;
@@ -8,11 +7,12 @@ use super::{
     analyzer::{UniformityDisruptor, UniformityRequirements},
     ExpressionError, FunctionInfo, ModuleInfo,
 };
-use crate::span::WithSpan;
+use crate::span::{SpanProvider, WithSpan};
 
 use crate::span::{AddSpan as _, MapErrWithSpan as _};
 
 use bit_set::BitSet;
+use codespan_reporting::diagnostic::Diagnostic;
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -94,8 +94,8 @@ pub enum FunctionError {
     InvalidReturnSpot,
     #[error("The `return` value {0:?} does not match the function return value")]
     InvalidReturnType(Option<Handle<crate::Expression>>),
-    #[error("The `if` condition {0:?} is not a boolean scalar")]
-    InvalidIfType(Handle<crate::Expression>),
+    #[error("`if` condition must of type boolean")]
+    InvalidIfType,
     #[error("The `switch` value {0:?} is not an integer scalar")]
     InvalidSwitchType(Handle<crate::Expression>),
     #[error("Multiple `switch` cases for {0:?} are present")]
@@ -186,6 +186,12 @@ struct BlockContext<'a> {
     special_types: &'a crate::SpecialTypes,
     prev_infos: &'a [FunctionInfo],
     return_type: Option<Handle<crate::Type>>,
+}
+
+impl SpanProvider<crate::Expression> for BlockContext<'_> {
+    fn get_span(&self, handle: Handle<crate::Expression>) -> crate::Span {
+        self.expressions.get_span(handle)
+    }
 }
 
 impl<'a> BlockContext<'a> {
@@ -433,14 +439,22 @@ impl super::Validator {
                     ref accept,
                     ref reject,
                 } => {
-                    match *context.resolve_type(condition, &self.valid_expression_set)? {
-                        Ti::Scalar {
+                    match context.resolve_type(condition, &self.valid_expression_set)? {
+                        &Ti::Scalar {
                             kind: crate::ScalarKind::Bool,
                             width: _,
                         } => {}
-                        _ => {
-                            return Err(FunctionError::InvalidIfType(condition)
-                                .with_span_handle(condition, context.expressions))
+                        resolved_type => {
+                            return Err(FunctionError::InvalidIfType
+                                .with_span_context((span, format!("Invalid type for if condition")))
+                                .with_context((
+                                    context.expressions.get_span(condition),
+                                    format!(
+                                        "Expression: `{}` of type: {}",
+                                        self.source_string(context.expressions.get_span(condition)),
+                                        self.display_type(Some(resolved_type))
+                                    ),
+                                )));
                         }
                     }
                     stages &= self.validate_block(accept, context)?.stages;
@@ -548,14 +562,27 @@ impl super::Validator {
                         .stages;
 
                     if let Some(condition) = break_if {
-                        match *context.resolve_type(condition, &self.valid_expression_set)? {
-                            Ti::Scalar {
+                        match context.resolve_type(condition, &self.valid_expression_set)? {
+                            &Ti::Scalar {
                                 kind: crate::ScalarKind::Bool,
                                 width: _,
                             } => {}
-                            _ => {
-                                return Err(FunctionError::InvalidIfType(condition)
-                                    .with_span_handle(condition, context.expressions))
+                            resolved_type => {
+                                return Err(FunctionError::InvalidIfType
+                                    .with_span_context((
+                                        span,
+                                        format!("Invalid type for if condition"),
+                                    ))
+                                    .with_context((
+                                        context.expressions.get_span(condition),
+                                        format!(
+                                            "Expression: `{}` of type: {}",
+                                            self.source_string(
+                                                context.expressions.get_span(condition)
+                                            ),
+                                            self.display_type(Some(resolved_type))
+                                        ),
+                                    )));
                             }
                         }
                     }
@@ -961,7 +988,7 @@ impl super::Validator {
         module: &crate::Module,
         mod_info: &ModuleInfo,
         #[cfg_attr(not(feature = "validate"), allow(unused))] entry_point: bool,
-    ) -> Result<FunctionInfo, WithSpan<FunctionError>> {
+    ) -> Result<FunctionInfo, Diagnostic<()>> {
         #[cfg_attr(not(feature = "validate"), allow(unused_mut))]
         let mut info = mod_info.process_function(fun, module, self.flags, self.capabilities)?;
 
@@ -992,7 +1019,8 @@ impl super::Validator {
                         name: argument.name.clone().unwrap_or_default(),
                         space: other,
                     }
-                    .with_span_handle(argument.ty, &module.types))
+                    .with_span_handle(argument.ty, &module.types)
+                    .diagnostic())
                 }
             }
             // Check for the least informative error last.
@@ -1004,14 +1032,16 @@ impl super::Validator {
                     index,
                     name: argument.name.clone().unwrap_or_default(),
                 }
-                .with_span_handle(argument.ty, &module.types));
+                .with_span_handle(argument.ty, &module.types)
+                .diagnostic());
             }
 
             if !entry_point && argument.binding.is_some() {
                 return Err(FunctionError::PipelineInputRegularFunction {
                     name: argument.name.clone().unwrap_or_default(),
                 }
-                .with_span_handle(argument.ty, &module.types));
+                .with_span_handle(argument.ty, &module.types)
+                .diagnostic());
             }
         }
 
@@ -1021,12 +1051,14 @@ impl super::Validator {
                 .contains(super::TypeFlags::CONSTRUCTIBLE)
             {
                 return Err(FunctionError::NonConstructibleReturnType
-                    .with_span_handle(result.ty, &module.types));
+                    .with_span_handle(result.ty, &module.types)
+                    .diagnostic());
             }
 
             if !entry_point && result.binding.is_some() {
                 return Err(FunctionError::PipelineOutputRegularFunction
-                    .with_span_handle(result.ty, &module.types));
+                    .with_span_handle(result.ty, &module.types)
+                    .diagnostic());
             }
         }
 
@@ -1042,7 +1074,8 @@ impl super::Validator {
                     Ok(stages) => info.available_stages &= stages,
                     Err(source) => {
                         return Err(FunctionError::Expression { handle, source }
-                            .with_span_handle(handle, &fun.expressions))
+                            .with_span_handle(handle, &fun.expressions)
+                            .diagnostic())
                     }
                 }
             }
@@ -1058,5 +1091,11 @@ impl super::Validator {
             info.available_stages &= stages;
         }
         Ok(info)
+    }
+}
+
+impl From<WithSpan<FunctionError>> for Diagnostic<()> {
+    fn from(value: WithSpan<FunctionError>) -> Self {
+        return value.diagnostic();
     }
 }

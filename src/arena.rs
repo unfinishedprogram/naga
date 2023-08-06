@@ -9,7 +9,7 @@ use crate::Span;
 use indexmap::set::IndexSet;
 
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq)]
-#[error("Handle {index} of {kind} is either not present, or inaccessible yet")]
+#[error("Handle {index} of {kind} is either not present, or not yet accessible")]
 pub struct BadHandle {
     pub kind: &'static str,
     pub index: usize,

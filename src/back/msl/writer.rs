@@ -4303,7 +4303,7 @@ fn test_stack_size() {
     let _ = module.functions.append(fun, Default::default());
     // analyse the module
     let info = crate::valid::Validator::new(ValidationFlags::empty(), Capabilities::empty())
-        .validate(&module)
+        .validate(&module, "".to_owned())
         .unwrap();
     // process the module
     let mut writer = Writer::new(String::new());
