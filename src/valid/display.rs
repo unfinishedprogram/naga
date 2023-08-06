@@ -34,14 +34,14 @@ impl super::Validator {
                         format!("Atomic<{}>", print_scalar(kind, *width))
                     }
                     TypeInner::Pointer { base, space } => {
-                        format!("ptr<{space:?}, {}>", self.display_type_handle(*base))
+                        format!("*{}", self.display_type_handle(*base))
                     }
                     TypeInner::ValuePointer {
                         size,
                         kind,
                         width,
                         space,
-                    } => format!("ptr<{space:?}, {}>", print_scalar(kind, *width)),
+                    } => format!("*{}", print_scalar(kind, *width)),
                     TypeInner::Array { base, size, stride } => match size {
                         &ArraySize::Constant(s) => {
                             format!("Array<{}, {s}>", self.display_type_handle(*base))

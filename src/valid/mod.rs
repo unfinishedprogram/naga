@@ -4,6 +4,7 @@ Shader validator.
 
 mod analyzer;
 mod compose;
+mod diagnostic_builder;
 mod display;
 mod expression;
 mod function;

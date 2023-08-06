@@ -1,6 +1,7 @@
 use crate::arena::Handle;
 use crate::arena::{Arena, UniqueArena};
 
+use super::diagnostic_builder::DiagnosticBuilder;
 use super::validate_atomic_compare_exchange_struct;
 
 use super::{
@@ -186,6 +187,7 @@ struct BlockContext<'a> {
     special_types: &'a crate::SpecialTypes,
     prev_infos: &'a [FunctionInfo],
     return_type: Option<Handle<crate::Type>>,
+    function:&'a crate::Function,
 }
 
 impl SpanProvider<crate::Expression> for BlockContext<'_> {
@@ -211,6 +213,7 @@ impl<'a> BlockContext<'a> {
             functions: &module.functions,
             special_types: &module.special_types,
             prev_infos,
+            function: fun, 
             return_type: fun.result.as_ref().map(|fr| fr.ty),
         }
     }
@@ -227,11 +230,12 @@ impl<'a> BlockContext<'a> {
         &self,
         handle: Handle<crate::Expression>,
         valid_expressions: &BitSet,
-    ) -> Result<&crate::TypeInner, WithSpan<ExpressionError>> {
+    ) -> Result<&crate::TypeInner, Diagnostic<()>> {
         if handle.index() >= self.expressions.len() {
-            Err(ExpressionError::DoesntExist.with_span())
+            Err(Diagnostic::error().with_message("INTERNAL: Expression out of bounds"))
         } else if !valid_expressions.contains(handle.index()) {
-            Err(ExpressionError::NotInScope.with_span_handle(handle, self.expressions))
+            Err(Diagnostic::error()
+                .label(self.expressions.get_span(handle), "Expression not in scope"))
         } else {
             Ok(self.info[handle].ty.inner_with(self.types))
         }
@@ -241,9 +245,8 @@ impl<'a> BlockContext<'a> {
         &self,
         handle: Handle<crate::Expression>,
         valid_expressions: &BitSet,
-    ) -> Result<&crate::TypeInner, WithSpan<FunctionError>> {
+    ) -> Result<&crate::TypeInner, Diagnostic<()>> {
         self.resolve_type_impl(handle, valid_expressions)
-            .map_err_inner(|source| FunctionError::Expression { handle, source }.with_span())
     }
 
     fn resolve_pointer_type(
@@ -268,30 +271,37 @@ impl super::Validator {
         arguments: &[Handle<crate::Expression>],
         result: Option<Handle<crate::Expression>>,
         context: &BlockContext,
-    ) -> Result<super::ShaderStages, WithSpan<CallError>> {
+    ) -> Result<super::ShaderStages, Diagnostic<()>> {
         let fun = &context.functions[function];
         if fun.arguments.len() != arguments.len() {
-            return Err(CallError::ArgumentCount {
-                required: fun.arguments.len(),
-                seen: arguments.len(),
-            }
-            .with_span());
+            return Err(Diagnostic::error().with_message(format!(
+                "expected {} arguments, found {}",
+                fun.arguments.len(),
+                arguments.len()
+            )));
         }
+
         for (index, (arg, &expr)) in fun.arguments.iter().zip(arguments).enumerate() {
-            let ty = context
-                .resolve_type_impl(expr, &self.valid_expression_set)
-                .map_err_inner(|source| {
-                    CallError::Argument { index, source }
-                        .with_span_handle(expr, context.expressions)
-                })?;
+            let ty = context.resolve_type(expr, &self.valid_expression_set)?;
             let arg_inner = &context.types[arg.ty].inner;
+
             if !ty.equivalent(arg_inner, context.types) {
-                return Err(CallError::ArgumentType {
-                    index,
-                    required: arg.ty,
-                    seen_expression: expr,
-                }
-                .with_span_handle(expr, context.expressions));
+                return Err(Diagnostic::error()
+                    .label(
+                        context.expressions.get_span(expr),
+                        format!(
+                            "type of argument `{}` is invalid",
+                            arg.name.as_ref().unwrap_or(&"<UNNAMED>".to_owned()),
+                        ),
+                    )
+                    .label(
+                        context.expressions.get_span(expr),
+                        format!(
+                            "expected: {}, found: {}",
+                            self.display_type(Some(ty)),
+                            self.display_type(Some(ty)),
+                        ),
+                    ));
             }
         }
 
@@ -300,18 +310,21 @@ impl super::Validator {
                 self.valid_expression_list.push(expr);
             } else {
                 return Err(CallError::ResultAlreadyInScope(expr)
-                    .with_span_handle(expr, context.expressions));
+                    .with_span_handle(expr, context.expressions)
+                    .diagnostic());
             }
+
             match context.expressions[expr] {
                 crate::Expression::CallResult(callee)
                     if fun.result.is_some() && callee == function => {}
                 _ => {
                     return Err(CallError::ExpressionMismatch(result)
-                        .with_span_handle(expr, context.expressions))
+                        .with_span_handle(expr, context.expressions)
+                        .diagnostic())
                 }
             }
         } else if fun.result.is_some() {
-            return Err(CallError::ExpressionMismatch(result).with_span());
+            return Err(Diagnostic::error().with_message("Call ERROR"));
         }
 
         let callee_info = &context.prev_infos[function.index()];
@@ -339,7 +352,7 @@ impl super::Validator {
         value: Handle<crate::Expression>,
         result: Handle<crate::Expression>,
         context: &BlockContext,
-    ) -> Result<(), WithSpan<FunctionError>> {
+    ) -> Result<(), Diagnostic<()>> {
         let pointer_inner = context.resolve_type(pointer, &self.valid_expression_set)?;
         let (ptr_kind, ptr_width) = match *pointer_inner {
             crate::TypeInner::Pointer { base, .. } => match context.types[base].inner {
@@ -348,14 +361,14 @@ impl super::Validator {
                     log::error!("Atomic pointer to type {:?}", other);
                     return Err(AtomicError::InvalidPointer(pointer)
                         .with_span_handle(pointer, context.expressions)
-                        .into_other());
+                        .diagnostic());
                 }
             },
             ref other => {
                 log::error!("Atomic on type {:?}", other);
                 return Err(AtomicError::InvalidPointer(pointer)
                     .with_span_handle(pointer, context.expressions)
-                    .into_other());
+                    .diagnostic());
             }
         };
 
@@ -366,7 +379,7 @@ impl super::Validator {
                 log::error!("Atomic operand type {:?}", other);
                 return Err(AtomicError::InvalidOperand(value)
                     .with_span_handle(value, context.expressions)
-                    .into_other());
+                    .diagnostic());
             }
         }
 
@@ -375,7 +388,7 @@ impl super::Validator {
                 log::error!("Atomic exchange comparison has a different type from the value");
                 return Err(AtomicError::InvalidOperand(cmp)
                     .with_span_handle(cmp, context.expressions)
-                    .into_other());
+                    .diagnostic());
             }
         }
 
@@ -404,7 +417,7 @@ impl super::Validator {
             _ => {
                 return Err(AtomicError::ResultTypeMismatch(result)
                     .with_span_handle(result, context.expressions)
-                    .into_other())
+                    .diagnostic())
             }
         }
         Ok(())
@@ -414,14 +427,13 @@ impl super::Validator {
         &mut self,
         statements: &crate::Block,
         context: &BlockContext,
-    ) -> Result<BlockInfo, WithSpan<FunctionError>> {
+    ) -> Result<BlockInfo, Diagnostic<()>> {
         use crate::{AddressSpace, Statement as S, TypeInner as Ti};
         let mut finished = false;
         let mut stages = super::ShaderStages::all();
-        for (statement, &span) in statements.span_iter() {
+        for (index, (statement, &span)) in statements.span_iter().enumerate() {
             if finished {
-                return Err(FunctionError::InstructionsAfterReturn
-                    .with_span_static(span, "instructions after return"));
+                return Err(Diagnostic::error().label(span, "instructions after return"));
             }
             match *statement {
                 S::Emit(ref range) => {
@@ -445,16 +457,16 @@ impl super::Validator {
                             width: _,
                         } => {}
                         resolved_type => {
-                            return Err(FunctionError::InvalidIfType
-                                .with_span_context((span, format!("Invalid type for if condition")))
-                                .with_context((
-                                    context.expressions.get_span(condition),
-                                    format!(
-                                        "Expression: `{}` of type: {}",
-                                        self.source_string(context.expressions.get_span(condition)),
-                                        self.display_type(Some(resolved_type))
-                                    ),
-                                )));
+                            return Err(
+                                Diagnostic::error()
+                            .label(
+                                span,
+                                format!(
+                                    "expected type `bool`, found {}",
+                                    self.display_type(Some(resolved_type))
+                                ),
+                            ).label(context.expressions.get_span(condition), "expression defined here"),
+                            );
                         }
                     }
                     stages &= self.validate_block(accept, context)?.stages;
@@ -468,11 +480,12 @@ impl super::Validator {
                         .resolve_type(selector, &self.valid_expression_set)?
                         .scalar_kind()
                     {
+                        // TODO: Validate this is the correct check,
+                        // This implies that vectors can be used in switch statements
                         Some(crate::ScalarKind::Uint) => true,
                         Some(crate::ScalarKind::Sint) => false,
                         _ => {
-                            return Err(FunctionError::InvalidSwitchType(selector)
-                                .with_span_handle(selector, context.expressions))
+                            return Err(Diagnostic::error().label(span, "invalid selector type"));
                         }
                     };
                     self.switch_values.clear();
@@ -482,48 +495,49 @@ impl super::Validator {
                             crate::SwitchValue::U32(_) if uint => {}
                             crate::SwitchValue::Default => {}
                             _ => {
-                                return Err(FunctionError::ConflictingCaseType.with_span_static(
+                                return Err(Diagnostic::error().label(
                                     case.body
                                         .span_iter()
                                         .next()
                                         .map_or(Default::default(), |(_, s)| *s),
-                                    "conflicting switch arm here",
+                                    format!(
+                                        "invalid case expected type `{}`, found `{}`",
+                                        if uint { "u32" } else { "i32" },
+                                        if uint { "i32" } else { "u32" }
+                                    ),
                                 ));
                             }
                         };
                         if !self.switch_values.insert(case.value) {
                             return Err(match case.value {
-                                crate::SwitchValue::Default => FunctionError::MultipleDefaultCases
-                                    .with_span_static(
-                                        case.body
-                                            .span_iter()
-                                            .next()
-                                            .map_or(Default::default(), |(_, s)| *s),
-                                        "duplicated switch arm here",
-                                    ),
-                                _ => FunctionError::ConflictingSwitchCase(case.value)
-                                    .with_span_static(
-                                        case.body
-                                            .span_iter()
-                                            .next()
-                                            .map_or(Default::default(), |(_, s)| *s),
-                                        "conflicting switch arm here",
-                                    ),
+                                crate::SwitchValue::Default => Diagnostic::error().label(
+                                    case.body
+                                        .span_iter()
+                                        .next()
+                                        .map_or(Default::default(), |(_, s)| *s),
+                                    "multiple default cases",
+                                ),
+                                _ => Diagnostic::error().label(
+                                    case.body
+                                        .span_iter()
+                                        .next()
+                                        .map_or(Default::default(), |(_, s)| *s),
+                                    "conflicting switch case",
+                                ),
                             });
                         }
                     }
                     if !self.switch_values.contains(&crate::SwitchValue::Default) {
-                        return Err(FunctionError::MissingDefaultCase
-                            .with_span_static(span, "missing default case"));
+                        return Err(Diagnostic::error().label(span, "missing default case"));
                     }
                     if let Some(case) = cases.last() {
                         if case.fall_through {
-                            return Err(FunctionError::LastCaseFallTrough.with_span_static(
+                            return Err(Diagnostic::error().label(
                                 case.body
                                     .span_iter()
                                     .next()
                                     .map_or(Default::default(), |(_, s)| *s),
-                                "bad switch arm here",
+                                "The last `switch` case contains a `fallthrough`",
                             ));
                         }
                     }
@@ -568,12 +582,9 @@ impl super::Validator {
                                 width: _,
                             } => {}
                             resolved_type => {
-                                return Err(FunctionError::InvalidIfType
-                                    .with_span_context((
-                                        span,
-                                        format!("Invalid type for if condition"),
-                                    ))
-                                    .with_context((
+                                return Err(Diagnostic::error()
+                                    .label(span, format!("Invalid type for if condition"))
+                                    .label(
                                         context.expressions.get_span(condition),
                                         format!(
                                             "Expression: `{}` of type: {}",
@@ -582,7 +593,7 @@ impl super::Validator {
                                             ),
                                             self.display_type(Some(resolved_type))
                                         ),
-                                    )));
+                                    ));
                             }
                         }
                     }
@@ -593,23 +604,26 @@ impl super::Validator {
                 }
                 S::Break => {
                     if !context.abilities.contains(ControlFlowAbility::BREAK) {
-                        return Err(FunctionError::BreakOutsideOfLoopOrSwitch
-                            .with_span_static(span, "invalid break"));
+                        return Err(Diagnostic::error().label(
+                            span,
+                            "`break` cannot be used outside of a `loop` or `switch`",
+                        ));
                     }
                     finished = true;
                 }
                 S::Continue => {
                     if !context.abilities.contains(ControlFlowAbility::CONTINUE) {
-                        return Err(FunctionError::ContinueOutsideOfLoop
-                            .with_span_static(span, "invalid continue"));
+                        return Err(Diagnostic::error()
+                            .label(span, "`continue` cannot be used outside of a `loop`"));
                     }
                     finished = true;
                 }
                 S::Return { value } => {
                     if !context.abilities.contains(ControlFlowAbility::RETURN) {
-                        return Err(FunctionError::InvalidReturnSpot
-                            .with_span_static(span, "invalid return"));
+                        return Err(Diagnostic::error()
+                            .label(span, "`return` called within a `continuing` block"));
                     }
+
                     let value_ty = value
                         .map(|expr| context.resolve_type(expr, &self.valid_expression_set))
                         .transpose()?;
@@ -625,18 +639,26 @@ impl super::Validator {
                     };
 
                     if !okay {
-                        log::error!(
-                            "Returning {:?} where {:?} is expected",
-                            value_ty,
-                            expected_ty
-                        );
-                        if let Some(handle) = value {
-                            return Err(FunctionError::InvalidReturnType(value)
-                                .with_span_handle(handle, context.expressions));
-                        } else {
-                            return Err(FunctionError::InvalidReturnType(value)
-                                .with_span_static(span, "invalid return"));
+
+                        // let return_span = statements.span_iter().nth(index);
+                        // let mut span = match return_span {
+                        //     Some((_, span)) => span,
+                        //     None => &span,
+                        // }.to_owned();
+                        let mut span = span.to_owned();
+                        for (_, other) in context.function.body.span_iter() {
+                            span.subsume(other.to_owned())
                         }
+
+                        return Err(Diagnostic::error().label(
+                            span,
+                            format!(
+                                "invalid `return` type for `{}` expected type {:?} but got, {:?}",
+                                &context.function.name.as_ref().unwrap_or(&"<UNKNOWN>".to_string()),
+                                self.display_type(expected_ty),
+                                self.display_type(value_ty)
+                            ),
+                        ));
                     }
                     finished = true;
                 }
@@ -661,7 +683,8 @@ impl super::Validator {
                             | crate::Expression::FunctionArgument(_) => break,
                             _ => {
                                 return Err(FunctionError::InvalidStorePointer(current)
-                                    .with_span_handle(pointer, context.expressions))
+                                    .with_span_handle(pointer, context.expressions)
+                                    .diagnostic())
                             }
                         }
                     }
@@ -669,8 +692,10 @@ impl super::Validator {
                     let value_ty = context.resolve_type(value, &self.valid_expression_set)?;
                     match *value_ty {
                         Ti::Image { .. } | Ti::Sampler { .. } => {
-                            return Err(FunctionError::InvalidStoreValue(value)
-                                .with_span_handle(value, context.expressions));
+                            return Err(Diagnostic::error().label(
+                                span,
+                                "cannot store `image` or `sampler` into a pointer",
+                            ));
                         }
                         _ => {}
                     }
@@ -698,19 +723,33 @@ impl super::Validator {
                         } => *value_ty == Ti::Scalar { kind, width },
                         _ => false,
                     };
+
                     if !good {
-                        return Err(FunctionError::InvalidStoreTypes { pointer, value }
-                            .with_span()
-                            .with_handle(pointer, context.expressions)
-                            .with_handle(value, context.expressions));
+                        return Err(Diagnostic::error()
+                            .label(
+                                span,
+                                format!(
+                                    "expected type `{}` but got `{}`",
+                                    self.display_type(Some(pointer_ty)),
+                                    self.display_type(Some(value_ty)),
+                                ),
+                            ));
                     }
 
                     if let Some(space) = pointer_ty.pointer_space() {
                         if !space.access().contains(crate::StorageAccess::STORE) {
-                            return Err(FunctionError::InvalidStorePointer(pointer)
-                                .with_span_static(
+                            return Err(Diagnostic::error()
+                                .label(span, "invalid store")
+                                .label(
                                     context.expressions.get_span(pointer),
                                     "writing to this location is not permitted",
+                                )
+                                .label(
+                                    context.expressions.get_span(pointer),
+                                    format!(
+                                        "pointer type does not support store: {}",
+                                        self.display_type(Some(pointer_ty))
+                                    ),
                                 ));
                         }
                     }
@@ -735,18 +774,22 @@ impl super::Validator {
                                     &context.global_vars[var_handle]
                                 }
                                 _ => {
-                                    return Err(FunctionError::InvalidImageStore(
-                                        ExpressionError::ExpectedGlobalVariable,
-                                    )
-                                    .with_span_handle(image, context.expressions))
+                                    return Err(Diagnostic::error()
+                                        .label(span, "invalid image store")
+                                        .label(
+                                            context.expressions.get_span(image),
+                                            "image must be global",
+                                        ));
                                 }
                             }
                         }
                         _ => {
-                            return Err(FunctionError::InvalidImageStore(
-                                ExpressionError::ExpectedGlobalVariable,
-                            )
-                            .with_span_handle(image, context.expressions))
+                            return Err(Diagnostic::error()
+                                .label(span, "invalid image store")
+                                .label(
+                                    context.expressions.get_span(image),
+                                    "image must be global",
+                                ));
                         }
                     };
 
@@ -767,32 +810,61 @@ impl super::Validator {
                                 .image_storage_coordinates()
                             {
                                 Some(coord_dim) if coord_dim == dim => {}
-                                _ => {
-                                    return Err(FunctionError::InvalidImageStore(
-                                        ExpressionError::InvalidImageCoordinateType(
-                                            dim, coordinate,
-                                        ),
-                                    )
-                                    .with_span_handle(coordinate, context.expressions));
+                                Some(coord_dim) => {
+                                    return Err(Diagnostic::error()
+                                        .label(span, "invalid coordinate dimension")
+                                        .label(
+                                            context.expressions.get_span(coordinate),
+                                            format!(
+                                                "expected dimension {:?} found, {:?}",
+                                                dim, coord_dim
+                                            ),
+                                        ))
+                                }
+                                None => {
+                                    return Err(Diagnostic::error()
+                                        .label(span, "invalid coordinate type")
+                                        .label(
+                                            context.expressions.get_span(coordinate),
+                                            format!(
+                                                "invalid coordinate type {}",
+                                                self.display_type(
+                                                    context
+                                                        .resolve_type(
+                                                            coordinate,
+                                                            &self.valid_expression_set
+                                                        )
+                                                        .ok()
+                                                )
+                                            ),
+                                        ))
                                 }
                             };
+
                             if arrayed != array_index.is_some() {
-                                return Err(FunctionError::InvalidImageStore(
-                                    ExpressionError::InvalidImageArrayIndex,
-                                )
-                                .with_span_handle(coordinate, context.expressions));
+                                return Err(Diagnostic::error()
+                                    .label(span, "image array index parameter is misplaced")
+                                    .label(
+                                        context.expressions.get_span(coordinate),
+                                        "invalid parameter",
+                                    ));
                             }
                             if let Some(expr) = array_index {
-                                match *context.resolve_type(expr, &self.valid_expression_set)? {
+                                match context.resolve_type(expr, &self.valid_expression_set)?.clone() {
                                     Ti::Scalar {
                                         kind: crate::ScalarKind::Sint | crate::ScalarKind::Uint,
                                         width: _,
                                     } => {}
-                                    _ => {
-                                        return Err(FunctionError::InvalidImageStore(
-                                            ExpressionError::InvalidImageArrayIndexType(expr),
-                                        )
-                                        .with_span_handle(expr, context.expressions));
+                                    resolved_type => {
+                                        return Err(Diagnostic::error()
+                                            .label(span, format!("invalid array index type"))
+                                            .label(
+                                                context.expressions.get_span(expr),
+                                                format!(
+                                                    "expected `int` found `{}`",
+                                                    self.display_type(Some(&resolved_type))
+                                                ),
+                                            ));
                                     }
                                 }
                             }
@@ -805,26 +877,43 @@ impl super::Validator {
                                     }
                                 }
                                 _ => {
-                                    return Err(FunctionError::InvalidImageStore(
-                                        ExpressionError::InvalidImageClass(class),
-                                    )
-                                    .with_span_handle(image, context.expressions));
+                                    return Err(Diagnostic::error()
+                                        .label(span, "store on non-store image")
+                                        .label(
+                                            context.expressions.get_span(image),
+                                            format!("image of class {:?}", class),
+                                        ))
                                 }
                             }
                         }
                         _ => {
-                            return Err(FunctionError::InvalidImageStore(
-                                ExpressionError::ExpectedImageType(var.ty),
-                            )
-                            .with_span()
-                            .with_handle(var.ty, context.types)
-                            .with_handle(image, context.expressions))
+                            return Err(Diagnostic::error()
+                                .label(span, "invalid image store")
+                                .label(
+                                    context.expressions.get_span(image),
+                                    format!(
+                                        "expected image type, found {:?}",
+                                        self.display_type(Some(global_ty))
+                                    ),
+                                ));
                         }
                     };
 
                     if *context.resolve_type(value, &self.valid_expression_set)? != value_ty {
-                        return Err(FunctionError::InvalidStoreValue(value)
-                            .with_span_handle(value, context.expressions));
+                        return Err(Diagnostic::error()
+                            .label(span, "invalid image store")
+                            .label(
+                                context.expressions.get_span(value),
+                                format!(
+                                    "expected type `{}`, found `{}`",
+                                    self.display_type(Some(&value_ty)),
+                                    self.display_type(
+                                        context
+                                            .resolve_type(value, &self.valid_expression_set)
+                                            .ok()
+                                    )
+                                ),
+                            ));
                     }
                 }
                 S::Call {
@@ -834,10 +923,15 @@ impl super::Validator {
                 } => match self.validate_call(function, arguments, result, context) {
                     Ok(callee_stages) => stages &= callee_stages,
                     Err(error) => {
-                        return Err(error.and_then(|error| {
-                            FunctionError::InvalidCall { function, error }
-                                .with_span_static(span, "invalid function call")
-                        }))
+                        return Err(error.label(
+                            span,
+                            format!(
+                                "invalid call to function `{}`",
+                                context.functions[function]
+                                    .name.as_ref()
+                                    .unwrap_or(&"<UNNAMED>".to_owned())
+                            ),
+                        ))
                     }
                 },
                 S::Atomic {
@@ -862,18 +956,23 @@ impl super::Validator {
                             ..
                         } => {}
                         _ => {
-                            return Err(FunctionError::WorkgroupUniformLoadInvalidPointer(pointer)
-                                .with_span_static(span, "WorkGroupUniformLoad"))
+                            return Err(Diagnostic::error().label(span, 
+                                format!("Expression of type {} is not valid as a WorkGroupUniformLoad argument. It should be a Pointer in Workgroup address space",
+                            self.display_type(Some(pointer_inner))))
+                        );
                         }
                     }
                     self.emit_expression(result, context)?;
                     let ty = match &context.expressions[result] {
                         &crate::Expression::WorkGroupUniformLoadResult { ty } => ty,
                         _ => {
-                            return Err(FunctionError::WorkgroupUniformLoadExpressionMismatch(
-                                result,
-                            )
-                            .with_span_static(span, "WorkGroupUniformLoad"));
+                            return Err(Diagnostic::error().label(span, 
+                                format!(
+                                    "expected type `{}`, found `WorkGroupUniformLoadResult`",
+                                    self.display_type(context.resolve_type(result, &self.valid_expression_set).ok())
+                                )
+                            ));
+
                         }
                     };
                     let expected_pointer_inner = Ti::Pointer {
@@ -881,25 +980,43 @@ impl super::Validator {
                         space: AddressSpace::WorkGroup,
                     };
                     if !expected_pointer_inner.equivalent(pointer_inner, context.types) {
-                        return Err(FunctionError::WorkgroupUniformLoadInvalidPointer(pointer)
-                            .with_span_static(span, "WorkGroupUniformLoad"));
+                        return Err(Diagnostic::error().label(span, 
+                            format!(
+                                "expected type `{}`, found `{}`",
+                                self.display_type(Some(&expected_pointer_inner)),
+                                self.display_type(Some(pointer_inner))
+                            )
+                        ));
+
                     }
                 }
                 S::RayQuery { query, ref fun } => {
                     let query_var = match *context.get_expression(query) {
                         crate::Expression::LocalVariable(var) => &context.local_vars[var],
                         ref other => {
-                            log::error!("Unexpected ray query expression {other:?}");
-                            return Err(FunctionError::InvalidRayQueryExpression(query)
-                                .with_span_static(span, "invalid query expression"));
+                            return Err(Diagnostic::error()
+                                .label(
+                                    span,
+                                    format!("invalid ray query"),
+                                )
+                                .label(
+                                    context.expressions.get_span(query),
+                                    format!("expected local variable, found {:?}", self.source_string(context.expressions.get_span(query))),
+                                ));
                         }
                     };
                     match context.types[query_var.ty].inner {
                         Ti::RayQuery => {}
                         ref other => {
-                            log::error!("Unexpected ray query type {other:?}");
-                            return Err(FunctionError::InvalidRayQueryType(query_var.ty)
-                                .with_span_static(span, "invalid query type"));
+                            return Err(Diagnostic::error()
+                                .label(
+                                    span,
+                                    format!("invalid ray query"),
+                                )
+                                .label(
+                                    context.expressions.get_span(query),
+                                    format!("expected ray query, found {:?}", self.display_type(Some(other))),
+                                ));
                         }
                     }
                     match *fun {
@@ -912,10 +1029,15 @@ impl super::Validator {
                             {
                                 Ti::AccelerationStructure => {}
                                 _ => {
-                                    return Err(FunctionError::InvalidAccelerationStructure(
-                                        acceleration_structure,
-                                    )
-                                    .with_span_static(span, "invalid acceleration structure"))
+                                    return Err(Diagnostic::error()
+                                        .label(
+                                            span,
+                                            format!("invalid acceleration structure"),
+                                        )
+                                        .label(
+                                            context.expressions.get_span(acceleration_structure),
+                                            format!("found {:?}", self.display_type(Some(context.resolve_type(acceleration_structure, &self.valid_expression_set)?))),
+                                        ));
                                 }
                             }
                             let desc_ty_given =
@@ -925,8 +1047,15 @@ impl super::Validator {
                                 .ray_desc
                                 .map(|handle| &context.types[handle].inner);
                             if Some(desc_ty_given) != desc_ty_expected {
-                                return Err(FunctionError::InvalidRayDescriptor(descriptor)
-                                    .with_span_static(span, "invalid ray descriptor"));
+                                return Err(Diagnostic::error()
+                                    .label(
+                                        span,
+                                        format!("invalid ray descriptor"),
+                                    )
+                                    .label(
+                                        context.expressions.get_span(descriptor),
+                                        format!("expected {:?}, found {:?}", self.display_type(desc_ty_expected), self.display_type(Some(desc_ty_given))),
+                                    ));
                             }
                         }
                         crate::RayQueryFunction::Proceed { result } => {
@@ -944,7 +1073,7 @@ impl super::Validator {
         &mut self,
         statements: &crate::Block,
         context: &BlockContext,
-    ) -> Result<BlockInfo, WithSpan<FunctionError>> {
+    ) -> Result<BlockInfo, Diagnostic<()>> {
         let base_expression_count = self.valid_expression_list.len();
         let info = self.validate_block_impl(statements, context)?;
         for handle in self.valid_expression_list.drain(base_expression_count..) {

@@ -398,3 +398,9 @@ impl<T, E, E2> MapErrWithSpan<E, E2> for Result<T, WithSpan<E>> {
         self.map_err(|e| e.and_then(func).into_other::<E2>())
     }
 }
+
+impl From<Span> for Range<usize> {
+    fn from(span: Span) -> Self {
+        span.start as usize..span.end as usize
+    }
+}
