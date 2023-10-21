@@ -2,7 +2,10 @@ use super::{
     analyzer::{FunctionInfo, GlobalUse},
     Capabilities, Disalignment, FunctionError, ModuleInfo,
 };
-use crate::arena::{Handle, UniqueArena};
+use crate::{
+    arena::{Handle, UniqueArena},
+    span::MapErrWithSpan,
+};
 
 use crate::span::{AddSpan as _, SpanProvider as _, WithSpan};
 use bit_set::BitSet;
@@ -614,8 +617,11 @@ impl super::Validator {
 
                 flags: self.flags,
             };
-            // ctx.validate(fr.ty, fr.binding.as_ref())
-            //     .map_err_inner(|e| EntryPointError::Result(e).with_span())?;
+            ctx.validate(fr.ty, fr.binding.as_ref()).map_err(|e| {
+                EntryPointError::Result(e.into_inner())
+                    .with_span()
+                    .diagnostic()
+            })?;
 
             if ep.stage == crate::ShaderStage::Vertex
                 && !result_built_ins.contains(&crate::BuiltIn::Position { invariant: false })
