@@ -1,3 +1,4 @@
+use crate::Span;
 use crate::arena::Handle;
 use crate::arena::{Arena, UniqueArena};
 
@@ -7,10 +8,11 @@ use super::validate_atomic_compare_exchange_struct;
 use super::{
     analyzer::{UniformityDisruptor, UniformityRequirements},
     ExpressionError, FunctionInfo, ModuleInfo,
+    diagnostic_display::DiagnosticProvider,
 };
 use crate::span::{SpanProvider, WithSpan};
 
-use crate::span::{AddSpan as _, MapErrWithSpan as _};
+use crate::span::AddSpan as _;
 
 use bit_set::BitSet;
 use codespan_reporting::diagnostic::Diagnostic;
@@ -639,21 +641,16 @@ impl super::Validator {
                     };
 
                     if !okay {
-
-                        // let return_span = statements.span_iter().nth(index);
-                        // let mut span = match return_span {
-                        //     Some((_, span)) => span,
-                        //     None => &span,
-                        // }.to_owned();
-                        let mut span = span.to_owned();
-                        for (_, other) in context.function.body.span_iter() {
-                            span.subsume(other.to_owned())
-                        }
+                        let return_span = statements.span_iter().nth(index);
+                        let span = match return_span {
+                            Some((_, span)) => *span,
+                            None => statements.span_iter().fold(Span::from(0..0), |s, a|s.until(a.1)),
+                        }.to_owned();
 
                         return Err(Diagnostic::error().label(
                             span,
                             format!(
-                                "invalid `return` type for `{}` expected type {:?} but got, {:?}",
+                                "invalid return type for {} expected type `{}` but got, `{}`",
                                 &context.function.name.as_ref().unwrap_or(&"<UNKNOWN>".to_string()),
                                 self.display_type(expected_ty),
                                 self.display_type(value_ty)
@@ -726,6 +723,7 @@ impl super::Validator {
 
                     if !good {
                         return Err(Diagnostic::error()
+                            .label(span, "invalid store")
                             .label(
                                 span,
                                 format!(
@@ -1202,9 +1200,7 @@ impl super::Validator {
                 match self.validate_expression(handle, expr, fun, module, &info, mod_info) {
                     Ok(stages) => info.available_stages &= stages,
                     Err(source) => {
-                        return Err(FunctionError::Expression { handle, source }
-                            .with_span_handle(handle, &fun.expressions)
-                            .diagnostic())
+                        return Err(self.get_diagnostic(source.with_span_handle(handle, &fun.expressions), (fun, module, &info)))
                     }
                 }
             }
@@ -1225,6 +1221,6 @@ impl super::Validator {
 
 impl From<WithSpan<FunctionError>> for Diagnostic<()> {
     fn from(value: WithSpan<FunctionError>) -> Self {
-        return value.diagnostic();
+        value.diagnostic()
     }
 }

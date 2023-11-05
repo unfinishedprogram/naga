@@ -42,11 +42,11 @@ impl super::Validator {
                         width,
                         space,
                     } => format!("*{}", print_scalar(kind, *width)),
-                    TypeInner::Array { base, size, stride } => match size {
-                        &ArraySize::Constant(s) => {
+                    TypeInner::Array { base, size, stride } => match *size {
+                        ArraySize::Constant(s) => {
                             format!("Array<{}, {s}>", self.display_type_handle(*base))
                         }
-                        &ArraySize::Dynamic => {
+                        ArraySize::Dynamic => {
                             format!("Array<{}>", self.display_type_handle(*base))
                         }
                     },
@@ -65,18 +65,18 @@ impl super::Validator {
                     .into(),
                     TypeInner::AccelerationStructure => "AccelerationStructure".into(),
                     TypeInner::RayQuery => "RayQuery".into(),
-                    TypeInner::BindingArray { base, size } => match size {
-                        &ArraySize::Constant(s) => {
+                    TypeInner::BindingArray { base, size } => match *size {
+                        ArraySize::Constant(s) => {
                             format!("BindingArray<{}, {s}>", self.display_type_handle(*base))
                         }
-                        &ArraySize::Dynamic => {
+                        ArraySize::Dynamic => {
                             format!("BindingArray<{}>", self.display_type_handle(*base))
                         }
                     },
                     TypeInner::Struct { members, span } => {
                         let res: String = members
                             .iter()
-                            .map(|member| match &member.name {
+                            .map(|member| match member.name.as_ref() {
                                 Some(name) => {
                                     format!("\t{name}: {},\n", self.display_type_handle(member.ty))
                                 }
